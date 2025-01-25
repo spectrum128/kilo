@@ -4,18 +4,32 @@
 #include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <sys/ioctl.h>
 #include <termios.h>
 #include <unistd.h>
 
+/*** defines ***/
+
+#define CTRL_KEY(k) ((k) & 0x1f)
 
 /*** data ***/
-// global variable for storing terminal attributes
-struct termios orig_termios;
 
+struct editorConfig{
+    int screenrows;
+    int screencols;
+
+    // global variable for storing terminal attributes
+    struct termios orig_termios;
+};
+
+struct editorConfig E;
 
 /*** terminal ***/
 
 void die(const char *s){
+    write(STDOUT_FILENO, "\x1b[2J", 4);
+    write(STDOUT_FILENO, "\x1b[H", 3);
+
     perror(s);
     exit(1);
 }
@@ -25,20 +39,19 @@ void disableRawMode(){
     // STDIN_FILENO comes from unistd.h
     // tcsetattr, TCSAFLUSH is from termios
     // TCSAFLUSH discards any unread input before applying changes to the terminal
-    if (tcsetattr(STDIN_FILENO, TCSAFLUSH, &orig_termios) == 1)
+    if (tcsetattr(STDIN_FILENO, TCSAFLUSH, &E.orig_termios) == 1)
         die("tcsetattr");
 }
 
 
 void enableRawMode(){
     // store the original terminal attributes in orig_termios
-    if (tcgetattr(STDIN_FILENO, &orig_termios) == -1) die("tcgetattr");
-    
+    if (tcgetattr(STDIN_FILENO, &E.orig_termios) == -1) die("tcgetattr");
     // atexit comes from stdlib
     atexit(disableRawMode);
 
     // make a copy of the original settings
-    struct termios raw = orig_termios;
+    struct termios raw = E.orig_termios;
 
     // Turn off echoing and canonical mode:
     // c_lflag is a field for 'local flags' - 'a dumping ground for other state' / misc flags
@@ -62,7 +75,7 @@ void enableRawMode(){
     // we can turn off ctrl + M with ICRNL from termios.
     // you would expect ctrl + M to output 13 but the terminal translates any carriage returns (13, '\r')
     // input by the user to new lines (10, '\n')
-    // ICRNL is also and Input flag Input Carriage Return New Line
+    // ICRNL is also an Input flag Input Carriage Return New Line
     raw.c_iflag &= ~(BRKINT | ICRNL | INPCK | ISTRIP | IXON);
     // we will turn off all output processing with the OPOST flag, this will stop the \n to \r\n conversion (newline to carriage return)
     // OPOST again comes from termios and is an output flag
@@ -78,44 +91,105 @@ void enableRawMode(){
 }
 
 
+char editorReadKey(){
+
+    int nread;
+    char c;
+
+    while((nread = read(STDIN_FILENO, &c, 1)) != 1){
+        if(nread == -1 && errno != EAGAIN) die("editor read key");
+    }
+
+    return c;
+}
+
+int getCursorPosition(int *rows, int *cols){
+
+    char buf[32];
+    unsigned int i = 0;
+
+
+    if(write(STDOUT_FILENO, "\x1b[6n", 4) != 4) return -1;
+
+    while(i < sizeof(buf) -1){
+        if(read(STDIN_FILENO, &buf[i], 1) != 1) break;
+        if (buf[i] == 'R') break;
+        i++;
+    }
+    buf[i] = '\0';
+    
+    printf("\r\n&buf[1]: '%s'\r\n", &buf[1]);
+
+    editorReadKey();
+
+    return -1;
+}
+
+int getWindowSize(int *rows, int *cols){
+    struct winsize ws;
+
+    if(1 || ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) == -1 || ws.ws_col == 0){
+        if(write(STDOUT_FILENO, "\x1b[999C\x1b[999B", 12) != 12) return -1;
+        return getCursorPosition(rows, cols);
+    } else {
+        *cols = ws.ws_col;
+        *rows = ws.ws_row;
+        return 0;
+    }
+}
+
+/*** output ***/
+
+void editorDrawRows(){
+    int y;
+    for(y = 0; y < E.screenrows; y++){
+        write(STDOUT_FILENO,"~\r\n", 3);
+    }
+}
+
+
+
+void editorRefreshScreen(){
+    write(STDOUT_FILENO, "\x1b[2J", 4);
+    write(STDOUT_FILENO, "\x1b[H", 3);
+
+    editorDrawRows();
+    write(STDOUT_FILENO, "\x1b[H", 3);
+}
+
+
+/*** input ***/
+
+
+void editorProcessKeypress(){
+    char c = editorReadKey();
+
+    switch(c){
+        case CTRL_KEY('q'):
+            write(STDOUT_FILENO, "\x1b[2J", 4);
+            write(STDOUT_FILENO, "\x1b[H", 3);
+            exit(0);
+            break;
+    }
+}
+
+
 /*** init ***/
+
+void initEditor(){
+    if(getWindowSize(&E.screenrows, &E.screencols) == -1) die("getWindowSize");
+}
 
 int main(){
 
     enableRawMode();
-
+    initEditor();
 
     // read and STDIN_FILENO come from unistd.h
     //while (read(STDIN_FILENO, &c, 1) == 1 && c != 'q'){
     while(1){
-        
-        char c = '\0';
-        if(read(STDIN_FILENO, &c, 1) == -1 && errno != EAGAIN) die ("read");
-        // iscntrl comes from ctype.h and printf comes from stdio.h
-        // iscntrl tests if the character is a control character - non printable characters
-        // ASCII codes 0-31 are control characters and 127 also
-        // codes 32 to 126 are all printable
-        if(iscntrl(c)){
-
-            // printf can print multiple representations of a byte
-            // %d formats the byte as a decimal number - i.e. its ASCII code
-            // %c writes the byte out directly as a character
-            // all escape sequences start with a single 27 byte, backspace is byte 127
-            // enter is byte 10, which is a newline character (also '\n')
-            // ctrl + A is 1, ctrl + B is 2, ctrl + C quits lol - ctrl key + A-Z map to codes 1-26
-            // ctrl + S stops the program sending output
-            // ctrl + Q will resume sending output
-            // ctrl + Z or sometimes Y will suspend our program in the background
-            // run command fg to bring it back to the foreground
-            // as we turned OPOST off we will add carriage returns our printf statements to make sure
-            // that the cursor moves back to the start of the line
-            printf("%d\r\n", c);
-        }
-        else{
-            printf("%d ('%c')\r\n", c, c);
-        }
-        if (c == 'q') break;
-
+        editorRefreshScreen();
+        editorProcessKeypress();
     }
 
     return 0;
