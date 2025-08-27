@@ -5,5 +5,6 @@ build:
 	$(CC) kilo.c -o ./build/kilo -std=c99
 
 run:
-	./build/kilo
+	./build/kilo kilo.c
+
  
