@@ -5,6 +5,7 @@ build:
 	$(CC) kilo.c -o ./build/kilo -std=c99
 
 run:
-	./build/kilo kilo.c
+	./build/kilo hello.txt
+
 
  
