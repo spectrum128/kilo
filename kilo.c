@@ -143,7 +143,7 @@ void disableRawMode(){
     // STDIN_FILENO comes from unistd.h
     // tcsetattr, TCSAFLUSH is from termios
     // TCSAFLUSH discards any unread input before applying changes to the terminal
-    if (tcsetattr(STDIN_FILENO, TCSAFLUSH, &E.orig_termios) == 1)
+    if (tcsetattr(STDIN_FILENO, TCSAFLUSH, &E.orig_termios) == -1)
         die("tcsetattr");
 }
 
